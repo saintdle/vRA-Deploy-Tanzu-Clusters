@@ -1,0 +1,34 @@
+---
+project: <Change Me!>
+kind: PIPELINE
+name: Delete deployment
+icon: organization,left, is-info
+enabled: true
+concurrency: 10
+input:
+  deployment_name: ''
+_inputMeta:
+  deployment_name:
+    mandatory: true
+    description: provide deployment name
+workspace:
+  endpoint: ''
+  image: ''
+  registry: ''
+  path: ''
+  autoCloneForTrigger: false
+  limits:
+    memory: 512
+    cpu: 1.0
+stageOrder:
+- Delete Deployment
+stages:
+  Delete Deployment:
+    taskOrder:
+    - Task0
+    tasks:
+      Task0:
+        type: Blueprint
+        input:
+          action: DeleteDeployment
+          deploymentName: ${input.deployment_name}

@@ -1,0 +1,404 @@
+---
+project: <CHange Me!>
+kind: PIPELINE
+name: Deploy vSphere K8s Cluster in Namespace and add endpoint
+icon: organization,left, is-info is-solid
+enabled: true
+description: Deploys a Tanzu cluster in a supervisor namespace
+concurrency: 10
+input:
+  add_to_ca: 'YES'
+  add_to_cs: 'YES'
+  k8s_cluster_name: ''
+  Project: ''
+  super_ns: ''
+  super_ns_cluster: ''
+_inputMeta:
+  k8s_cluster_name:
+    mandatory: true
+    description: Enter Name for Tanzu K8s Cluster
+  add_to_ca:
+    mandatory: false
+    description: Add as Cloud Assembly Endpoint (YES or NO)
+  Project:
+    mandatory: true
+    description: Project name Endpoints should be added to
+  add_to_cs:
+    mandatory: true
+    description: Add as Code Stream Endpoint (YES or NO)
+  super_ns:
+    mandatory: true
+    description: Enter Supervisor Namespace Name
+  super_ns_cluster:
+    mandatory: true
+    description: vSphere Cluster with Supervisor enabled
+workspace:
+  endpoint: ''
+  image: saintdle/k8s-ci:latest
+  registry: ''
+  path: ''
+  autoCloneForTrigger: false
+  limits:
+    memory: 512
+    cpu: 1.0
+stageOrder:
+- Get vRA API
+- Create Supervisor Namespace
+- Create Tanzu K8s Cluster
+- Configure Tanzu Cluster
+- Integration-to-vRA
+stages:
+  Create Tanzu K8s Cluster:
+    taskOrder:
+    - Create Login Script to Supervisor Cluster
+    - Create Tanzu Cluster
+    - Checking for Cluster Completion
+    tasks:
+      Create Login Script to Supervisor Cluster:
+        type: CI
+        input:
+          steps:
+          - '# Download the vSphere Kubectl Plugin'
+          - wget --no-check-certificate https://${Create Supervisor Namespace.Create Supervisor Namespace
+            from Blueprint.output.deploymentDetails.resources.Cloud_SV_Namespace_1.address}/wcp/plugin/linux-amd64/vsphere-plugin.zip
+          - '# Extract the plugin'
+          - unzip vsphere-plugin.zip
+          - '# Install the plugin'
+          - mv -f bin/* /usr/bin/
+          - ''
+          - tee expect.sh > /dev/null << EOF
+          - '#!/usr/bin/expect -f'
+          - set timeout -1
+          - spawn kubectl vsphere login --server ${Create Supervisor Namespace.Create Supervisor Namespace
+            from Blueprint.output.deploymentDetails.resources.Cloud_SV_Namespace_1.address} --insecure-skip-tls-verify
+            --vsphere-username ${var.vcf-username}
+          - match_max 100000
+          - expect -exact "\r
+          - 'Password: "'
+          - send -- "${var.vcf-password}\r"
+          - expect eof
+          - EOF
+          - ''
+          - chmod 777 expect.sh
+          - ''
+          - ''
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Create Tanzu Cluster:
+        type: CI
+        input:
+          steps:
+          - ./expect.sh
+          - ''
+          - tee cluster.yaml > /dev/null << EOF
+          - 'apiVersion: run.tanzu.vmware.com/v1alpha1'
+          - 'kind: TanzuKubernetesCluster'
+          - 'metadata:'
+          - '  name: ${input.k8s_cluster_name}'
+          - '  namespace: ${input.super_ns}'
+          - 'spec:'
+          - '  distribution:'
+          - '    version: v1.17.8'
+          - '  topology:'
+          - '    controlPlane:'
+          - '      class: best-effort-small'
+          - '      count: 1'
+          - '      storageClass: management-storage-policy-thin'
+          - '    workers:'
+          - '      class: best-effort-small'
+          - '      count: 3'
+          - '      storageClass: management-storage-policy-thin'
+          - '  settings:'
+          - '    network:'
+          - '      cni:'
+          - '        name: calico'
+          - '    storage:'
+          - '      defaultClass: management-storage-policy-thin'
+          - EOF
+          - ''
+          - kubectl config use-context ${input.super_ns}
+          - kubectl apply -f cluster.yaml
+          - ''
+          - ''
+          - ''
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Checking for Cluster Completion:
+        type: CI
+        input:
+          steps:
+          - ./expect.sh
+          - ''
+          - kubectl config use-context ${input.super_ns}
+          - ''
+          - currentstatus=$(kubectl get tkc -o=jsonpath='{.items[0].status.phase}')
+          - statusdone="running"
+          - while [ $currentstatus != $statusdone ]
+          - do
+          - '  echo "Still Building Cluster"'
+          - '  sleep 20'
+          - '  currentstatus=$(kubectl get tkc -o=jsonpath=''{.items[*].status.phase}'')'
+          - done
+          - ''
+          - echo "Cluster Build Complete"
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+  Integration-to-vRA:
+    taskOrder:
+    - Collect-Cluster-Information
+    - Create Code Stream K8s Endpoint,Create Cloud Assembly K8s Endpoint
+    tasks:
+      Create Cloud Assembly K8s Endpoint:
+        type: REST
+        preCondition: ${input.add_to_cs} == "YES"
+        input:
+          action: post
+          url: https://${var.vraFQDN}/cmx/api/resources/k8s/clusters/
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+            Authorization: ${Get vRA API.Authentication.output.responseHeaders.Authorization}
+          payload: |-
+            {
+               "name":"${input.k8s_cluster_name}",
+               "description":"Created by CodeStream",
+               "address":"${Integration-to-vRA.Collect-Cluster-Information.output.exports.APISERVER}",
+               "credentials":{
+                  "privateKey":"${Integration-to-vRA.Collect-Cluster-Information.output.exports.TOKEN}",
+                  "type":"Bearer"
+               },
+               "clusterType":"EXTERNAL",
+               "caCertificate":"${Integration-to-vRA.Collect-Cluster-Information.output.exports.ClusterCACertificate}",
+               "shared":"true",
+               "global":"true"
+            }
+      Create Code Stream K8s Endpoint:
+        type: REST
+        preCondition: ${input.add_to_cs} == "YES"
+        input:
+          action: post
+          url: https://${var.vraFQDN}/pipeline/api/endpoints
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+            Authorization: ${Get vRA API.Authentication.output.responseHeaders.Authorization}
+          payload: |-
+            {
+               "name":"${input.k8s_cluster_name}",
+               "project":"${input.Project}",
+               "description":"Added from Code Stream",
+               "type":"k8s",
+               "properties":{
+                  "kubernetesURL":"${Integration-to-vRA.Collect-Cluster-Information.output.exports.APISERVER}",
+                  "authType":"token",
+                  "token":"${Integration-to-vRA.Collect-Cluster-Information.output.exports.TOKEN}",
+                  "fingerprint":"${Integration-to-vRA.Collect-Cluster-Information.output.exports.FINGERPRINT}"
+               }
+            }
+      Collect-Cluster-Information:
+        type: CI
+        input:
+          steps:
+          - ./expect2.sh
+          - ''
+          - export APISERVER=$(kubectl config view --minify | grep server | cut -f 2- -d ":" | tr -d "
+            ")
+          - APISERVERNOHTTPS=$(echo $APISERVER | cut -c 9-)
+          - FPRINT=$(openssl s_client -connect $APISERVERNOHTTPS < /dev/null 2>/dev/null | openssl x509
+            -fingerprint -sha256 -noout -in /dev/stdin)
+          - export FINGERPRINT=$(echo $FPRINT | cut -c 20-)
+          - TOKENNAME=$(kubectl -n kube-system get serviceaccount/dev-admin -o jsonpath='{.secrets[0].name}')
+          - export TOKEN=$(kubectl -n kube-system get secret $TOKENNAME -o jsonpath='{.data.token}'| base64
+            --decode)
+          - ''
+          - kubectl config view --minify --raw >> kubeconf.yaml
+          - ''
+          - yq eval '.clusters[0].cluster."certificate-authority-data"' kubeconf.yaml
+          - ''
+          - export ClusterCACertificate=$(yq eval '.clusters[0].cluster."certificate-authority-data"'
+            kubeconf.yaml)
+          export:
+          - APISERVER
+          - FINGERPRINT
+          - TOKEN
+          - ClusterCACertificate
+          artifacts: [
+            ]
+          process: [
+            ]
+  Get vRA API:
+    taskOrder:
+    - Authentication
+    tasks:
+      Authentication:
+        type: REST
+        input:
+          action: post
+          url: https://${var.vraFQDN}/csp/gateway/am/idp/auth/login?access_token
+          headers:
+            Accept: application/json
+            Content-Type: application/json
+          payload: |-
+            {
+              "username": "${var.vraUser}",
+              "password": "${var.vraUserPassword}"
+            }
+  Create Supervisor Namespace:
+    taskOrder:
+    - Create Supervisor Namespace from Blueprint
+    - Update Supervisor Namespace
+    tasks:
+      Update Supervisor Namespace:
+        type: Custom
+        input:
+          name: CI-Script-Add-Storage-Super-Namespace
+          version: '1'
+          properties:
+            host: ${var.vcf-vc}
+            user: ${var.vcf-username}
+            vcpass: ${var.vcf-password}
+            clustername: ${input.super_ns_cluster}
+            namespacename: ${input.super_ns}
+            nsrole: EDIT
+            subjecttype: GROUP
+            nsuser: Administrator
+            nsdomain: vsphere.local
+            storagepolicy: Management Storage policy - Thin
+            storagelimit: '0'
+      Create Supervisor Namespace from Blueprint:
+        type: Blueprint
+        input:
+          action: CreateDeployment
+          deploymentName: ${requestBy}-${input.super_ns}
+          blueprint: VCF Supervisor Namespace
+          version: '1'
+          parameters:
+            ns-name: ${input.super_ns}
+  Configure Tanzu Cluster:
+    taskOrder:
+    - Create Login Script to Tanzu Cluster
+    - Create Cluster Service Account
+    - Role Binding Service Account
+    tasks:
+      Role Binding Service Account:
+        type: CI
+        input:
+          steps:
+          - ./expect2.sh
+          - ''
+          - tee svc-rbac.yaml > /dev/null << EOF
+          - 'apiVersion: rbac.authorization.k8s.io/v1'
+          - 'kind: ClusterRoleBinding'
+          - 'metadata:'
+          - '  name: dev-admin'
+          - 'roleRef:'
+          - '  apiGroup: rbac.authorization.k8s.io'
+          - '  kind: ClusterRole'
+          - '  name: cluster-admin'
+          - 'subjects:'
+          - '  - kind: ServiceAccount'
+          - '    name: dev-admin'
+          - '    namespace: kube-system'
+          - EOF
+          - ''
+          - kubectl apply -f svc-rbac.yaml
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Create Login Script to Tanzu Cluster:
+        type: CI
+        input:
+          steps:
+          - tee expect2.sh > /dev/null << EOF
+          - '#!/usr/bin/expect -f'
+          - set timeout -1
+          - '#KUBECTL_VSPHERE_PASSWORD=${var.vcf-password}'
+          - spawn kubectl vsphere login --server ${Create Supervisor Namespace.Create Supervisor Namespace
+            from Blueprint.output.deploymentDetails.resources.Cloud_SV_Namespace_1.address} --insecure-skip-tls-verify --vsphere-username
+            ${var.vcf-username} --tanzu-kubernetes-cluster-name ${input.k8s_cluster_name} --tanzu-kubernetes-cluster-namespace
+            ${input.super_ns}
+          - ''
+          - match_max 100000
+          - expect -exact "\r
+          - 'Password: "'
+          - send -- "${var.vcf-password}\r"
+          - expect eof
+          - EOF
+          - ''
+          - chmod 777 expect2.sh
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+      Create Cluster Service Account:
+        type: CI
+        input:
+          steps:
+          - ./expect2.sh
+          - ''
+          - tee cluster_sa.yaml > /dev/null << EOF
+          - 'apiVersion: v1'
+          - 'kind: ServiceAccount'
+          - 'metadata:'
+          - '  name: dev-admin'
+          - '  namespace: kube-system'
+          - EOF
+          - ''
+          - kubectl apply -f cluster_sa.yaml
+          export: [
+            ]
+          artifacts: [
+            ]
+          process: [
+            ]
+notifications:
+  email:
+  - endpoint: Codestream-Default-Email
+    body: |-
+      <html>
+
+      <body>
+
+      <p class=MsoNormal><b><span style='font-size:14.0pt'>Cluster Information:<o:p></o:p></span></b></p>
+
+      <p class=MsoNormal><span style='font-size:14.0pt'>Cluster Service Account: dev-admin<o:p></o:p></span></p>
+
+      <p class=MsoNormal><span style='font-size:14.0pt'>Cluster Address: ${Integration-to-vRA.Collect-Cluster-Information.output.exports.APISERVER}<o:p></o:p></span></p>
+
+      <p class=MsoNormal><span style='font-size:14.0pt'>Cluster Token: ${Integration-to-vRA.Collect-Cluster-Information.output.exports.TOKEN}<o:p></o:p></span></p>
+
+      <p class=MsoNormal><span style='font-size:14.0pt'>Cluster Fingerprint: ${Integration-to-vRA.Collect-Cluster-Information.output.exports.FINGERPRINT}<o:p></o:p></span></p>
+
+      </body>
+
+      </html>
+    event: SUCCESS
+    subject: TKG Cluster Deployment Complete
+    to:
+    - ${requestBy}
+rollbacks:
+- inputs:
+    deployment_name: ${requestBy}-${input.super_ns}
+  name: Delete deployment
+  stage: Create Supervisor Namespace
+- inputs:
+    deployment_name: ${requestBy}-${input.super_ns}
+  name: Delete deployment
+  stage: Create Tanzu K8s Cluster

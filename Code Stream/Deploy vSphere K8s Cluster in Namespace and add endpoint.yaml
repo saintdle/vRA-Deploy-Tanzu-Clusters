@@ -282,7 +282,7 @@ stages:
         input:
           action: CreateDeployment
           deploymentName: ${requestBy}-${input.super_ns}
-          blueprint: VCF Supervisor Namespace
+          blueprint: Deploy vSphere K8s Cluster in Namespace
           version: '1'
           parameters:
             ns-name: ${input.super_ns}

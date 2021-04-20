@@ -32,7 +32,7 @@ _inputMeta:
     description: Enter Supervisor Namespace Name
   supervisor_address:
     mandatory: false
-    description: ''
+    description: 'IP of Supervisor Address from WCP in vCenter'
   super_ns_cluster:
     mandatory: false
     description: vSphere Cluster with Supervisor enabled

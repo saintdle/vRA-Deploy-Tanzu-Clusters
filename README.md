@@ -19,4 +19,4 @@ To achieve our requirements, we’ll be configuring the following:
 
 
 To get started, please see this blog post:
-- https://veducate.co.uk/vra-deploy-tanzu-clusters/ 
+- https://dy.si/RM9Sr2
